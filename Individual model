@@ -408,3 +408,5 @@ abline(v = mean(cons_share[,2]), col = "red")
 legend('topleft',legend = c(paste('bias:',round(mean((y-x)),3)),
                             paste('rmse:',round(sqrt(mean((y-x)^2)),3)),
                             paste('cor:',round(cor(y,x),3))))
+
+mae(x,y)
