@@ -1,6 +1,5 @@
-setwd("C:/Users/Tristan/Desktop/BISS_MASTER_2022/Data/Individual")
-
 options(scipen = 999)
+
 library("dplyr")
 library("readxl")
 library("foreign")
