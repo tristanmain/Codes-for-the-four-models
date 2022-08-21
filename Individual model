@@ -1,0 +1,411 @@
+setwd("C:/Users/Tristan/Desktop/BISS_MASTER_2022/Data/Individual")
+
+options(scipen = 999)
+library("dplyr")
+library("readxl")
+library("foreign")
+library("parallel")
+library("rstan")
+library("data.table")
+library("mltools")
+library("bayesplot")
+library("Metrics")
+
+## READING IN THE DATA
+
+## post-stratification frame
+## Downloaded from: https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/IPPPNU
+pf <- read.csv("hlv_psw.csv", stringsAsFactors = FALSE)
+pf <- pf %>%
+      dplyr::select(GSSCode, sex, age0, housing,
+                hrsocgrd, education, weight)
+
+## individual level data
+## Downloaded from: https://www.britishelectionstudy.com/data-object/wave-19-of-the-2014-2023-british-election-study-internet-panel/
+suppressWarnings(indxls <- read.spss("BES2019_W19_v1.0-2.sav", to.data.frame=TRUE))
+
+## constituency level data
+## Downloaded from: https://www.britishelectionstudy.com/data-object/2019-bes-constituency-results-with-census-and-candidate-data
+conxls <- read_xlsx("BES-2019-General-Election-results-file-v1.1.xlsx", 
+                     col_names = TRUE)
+
+## Remove non-voters and add vector with binary properties for conservative win 
+## (1 for Conservatives, 0 for other political parties)
+indxls = indxls[which(indxls$p_turnout_2019 !="No, I did not vote"),]
+indxls = indxls[which(indxls$p_turnout_2019 !="Don't know"),]
+indxls$con_vote = ifelse(indxls$generalElectionVote=="Conservative",1,0)
+
+
+## RECODING THE VARIABLES TO MATCH THE POST-STRATIFATION FRAME
+## local area
+conxls$GSSCode <- conxls$ONSConstID
+
+## Sex
+indxls$sex <- indxls$gender
+
+## Housing
+indxls$housing <- recode(indxls$p_housing, 
+                           "Own â.... outright" = "Owns", 
+                           "Own â.... with a mortgage" = "Owns",
+                           "Own (part-own) â.... through shared ownership scheme (i.e. pay part mortgage, part rent)" = "Owns",
+                           "Rent â.... from a private landlord" = "Rents",
+                           "Rent â.... from my local authority" = "Rents",
+                           "Rent â.... from a housing association" = "Rents",
+                           "Neither â.... I live with my parents, family or friends but pay some rent to them" = "Rents",
+                           "Neither â.... I live rent-free with my parents, family or friends" = "Rents",
+                           "Other" = "Rents")
+
+## Education
+indxls$education <- recode(indxls$p_edlevel,
+                           "Below GCSE" = "Level 1",
+                           "GCSE" = "Level 2",
+                           "A-level" = "Level 3",
+                           "Undergraduate" = "Level 4/5",
+                           "Postgrad" = "Level 4/5")
+
+## Social grade
+indxls$hrsocgrd <- recode(indxls$p_socgrade, 
+                            "A" = "AB",
+                            "B" = "AB",
+                            "D" = "DE",
+                            "E" = "DE")
+levels(indxls$hrsocgrd)[which(levels(indxls$hrsocgrd) %in% c("Refused", "Unknown"))]=NA
+
+## Age
+age_num <- as.numeric(as.character(unlist(indxls$age)))
+indxls$age0 = cut(age_num,breaks = c(-Inf,19,24,29,44,59,64,74,Inf),
+                  labels = c("16-19",
+                             "20-24",
+                             "25-29",
+                             "30-44",
+                             "45-59",
+                             "60-64",
+                             "65-74",
+                             "75+"))
+
+## Select the variables to be used in the MrP analysis and merge with the 
+## local area identifier GSSCode
+inds <- dplyr::select(indxls, 
+               pano, 
+               sex, 
+               age0, 
+               housing, 
+               hrsocgrd, 
+               education,
+               con_vote)
+cons <- dplyr::select(conxls, 
+               pano, 
+               GSSCode)
+bess <- merge(inds, cons)
+bess <- select(bess, -pano,)
+
+## Delete incomplete cases
+bess <- bess %>%
+  filter(GSSCode != "         ")
+bess <- bess[complete.cases(bess),]
+
+## Create a baseline for each variable to be used in the hierarchical models
+age1<-model.matrix(~age0-1,data = bess)[,-5] ## Baseline "45-59" 
+sex1<-model.matrix(~sex-1,data = bess)[,-1] ## Baseline "Female"
+housing1<-model.matrix(~housing-1,data = bess)[,-1] ## Baseline "Owns" 
+hrsocgrd1 <- model.matrix(~hrsocgrd-1, data=bess)[,-1] ## Baseline "AB"
+education1<-model.matrix(~education-1,data = bess)[,-5] ## Baseline "Level 4/5"
+
+## PREPARING THE MODEL
+## Model the data
+X <- cbind(education1, age1,sex1,housing1,hrsocgrd1) 
+Y <- bess$con_vote
+area_id <- as.integer(as.factor(bess$GSSCode))
+model_data = list(Y = Y, 
+                  X = X,
+                  p = dim(X)[2],
+                  n = length(Y),
+                  area_id = area_id,
+                  N_area = max(area_id))
+
+## Coding the MrP model
+model_code= "data {
+  int<lower = 1> n; // number of observations, rows in matrix
+  int<lower = 1> p; // number of covariates, columns in matrix
+  matrix[n, p] X;   // model matrix
+  int<lower = 0,upper = 1> Y[n]; // response variable
+  int<lower = 1> N_area; // number of areas
+  int<lower = 1> area_id[n]; // vector of group identifier per subject
+  
+}
+
+parameters{
+  real alpha; // intercept
+  vector[p] beta; // coefficients for individual level observations
+  real<lower = 0> tau; // spread of group observations
+  vector[N_area] eta; // vector of contstituency coefficients
+
+}
+
+transformed parameters{
+  vector[n] mu;
+  vector[n] pi;
+
+  mu = alpha + X*beta + eta[area_id];
+  pi = inv_logit(mu);
+  
+}
+
+model{
+// priors 
+  alpha ~ normal(0,1);
+  beta ~ normal(0,1);
+  tau ~ normal(0,1);
+  eta ~ normal(0,tau);
+  
+
+// likelihood
+
+  Y ~ bernoulli(pi);
+
+
+}"
+
+## Check the number of cores, which is the maximum number of chains the model 
+## can run (simultaneously)
+detectCores(all.tests = FALSE, logical = TRUE)
+
+## Run the Stan model
+fit <- stan(model_code = model_code, 
+            data = model_data,
+            iter = 100,
+            warmup = 50,
+            verbose = T,
+            chains = 4,
+            pars = c("alpha","beta","eta"),
+            cores =4)
+
+## Checking Rhat
+mcmc_rhat(rhat(fit))
+print(fit, pars = c("alpha", "beta"))
+print(fit, pars = ("eta"))
+
+## Checking MCMC convergence
+traceplot(fit, pars = c("alpha", "beta"), inc_warmup = TRUE)
+traceplot(fit, pars = c("eta[50]",
+                        "eta[100]",
+                        "eta[150]",
+                        "eta[200]",
+                        "eta[250]",
+                        "eta[300]",
+                        "eta[350]",
+                        "eta[400]",
+                        "eta[450]",
+                        "eta[500]",
+                        "eta[550]",
+                        "eta[600"),
+          inc_warmup = TRUE)
+
+print(fit, pars = c("alpha", "beta"))
+
+## Checking posterior distribution of the model parameters
+mcmc_areas(fit,pars = c("alpha",
+                        "beta[1]", 
+                        "beta[2]",
+                        "beta[3]",
+                        "beta[4]",
+                        "beta[5]",
+                        "beta[6]",
+                        "beta[7]",
+                        "beta[8]",
+                        "beta[9]",
+                        "beta[10]",
+                        "beta[11]",
+                        "beta[12]",
+                        "beta[13]",
+                        "beta[14]",
+                        "beta[15]",
+                        "beta[16]"
+                        ),
+           prob = 0.95)
+
+mcmc_areas(fit,pars = c("eta[50]",
+                        "eta[100]",
+                        "eta[150]",
+                        "eta[200]",
+                        "eta[250]",
+                        "eta[300]",
+                        "eta[350]",
+                        "eta[400]",
+                        "eta[450]",
+                        "eta[500]",
+                        "eta[550]",
+                        "eta[600]"),
+prob = 0.95)
+
+## Manipulate the weights of the profiles
+pf$weight = pf$weight*conxls$Electorate19[match(pf$GSSCode,conxls$ONSConstID)]
+
+## Prepare the post-stratification frame for prediction.
+test <- as.data.table(pf[,c('GSSCode','education','age0','sex','housing','hrsocgrd' ,'weight')])
+test$education = as.factor(test$education)
+test$age0 = as.factor(test$age0)
+test$sex = as.factor(test$sex)
+test$housing = as.factor(test$housing)
+test$hrsocgrd = as.factor(test$hrsocgrd)
+
+## One-hot encoding of factor variables
+test = one_hot(test,dropCols = T,dropUnusedLevels = T,
+               cols = c('education','age0','sex','housing','hrsocgrd'))
+
+## Use the posterior draws of the Stan output for prediction
+beta_sims = extract(fit,pars = c('beta'),permuted = T,inc_warmup = F)$beta
+alpha_sims = extract(fit,pars = c('alpha'),permuted = T,inc_warmup = F)$alpha
+eta_sims = extract(fit,pars = c('eta'),permuted = T,inc_warmup = F)$eta
+
+## Create inverse logit function
+inv_logit = function(x){exp(x)/(1+exp(x))}
+
+## Create empty data tables for vote share predictions
+pi_hat_list = data.table()
+vote_share_list = data.table()
+
+pi_hat_area_list = data.table()
+vote_share_area_list = data.table()
+
+## Predict and fill empty tables with estimates from vote shares
+for(s in 1:50){
+  mu_hat = alpha_sims[s] + 
+    test$`education_Level 1`*beta_sims[s,colnames(model_data$X)=="educationLevel 1"] +
+    test$`education_Level 2`*beta_sims[s,colnames(model_data$X)=="educationLevel 2"] +
+    test$`education_Level 3`*beta_sims[s,colnames(model_data$X)=="educationLevel 3"] +
+    test$`education_No qualifications`*beta_sims[s,colnames(model_data$X)=="educationNo qualifications"] +
+    test$`age0_16-19`*beta_sims[s,colnames(model_data$X)=="age016-19"] +
+    test$`age0_20-24`*beta_sims[s,colnames(model_data$X)=="age020-24"] +
+    test$`age0_25-29`*beta_sims[s,colnames(model_data$X)=="age025-29"] +
+    test$`age0_30-44`*beta_sims[s,colnames(model_data$X)=="age030-44"] +
+    test$`age0_60-64`*beta_sims[s,colnames(model_data$X)=="age060-64"] +
+    test$`age0_65-74`*beta_sims[s,colnames(model_data$X)=="age065-74"] +
+    test$`age0_75+`*beta_sims[s,colnames(model_data$X)=="age075+"] +
+    test$`sex_Male`*beta_sims[s,colnames(model_data$X)=="sex1"] +
+    test$`housing_Rents`*beta_sims[s,colnames(model_data$X)=="housing1"] +
+    test$`hrsocgrd_C1`*beta_sims[s,colnames(model_data$X)=="hrsocgrdC1"] +
+    test$`hrsocgrd_C2`*beta_sims[s,colnames(model_data$X)=="hrsocgrdC2"] +
+    test$`hrsocgrd_DE`*beta_sims[s,colnames(model_data$X)=="hrsocgrdDE"] +
+    eta_sims[s,match(test$GSSCode,levels(as.factor(bess$GSSCode)))]
+  
+  pi_hat = inv_logit(mu_hat)
+  
+  #storage
+  pi_hat_list = cbind(pi_hat_list,pi_hat)
+  
+  # national vote share
+  vote_share = sum(pi_hat*test$weight)/sum(test$weight)
+  
+  vote_share_list = cbind(vote_share_list,vote_share)
+  
+  # area level 
+  temp = data.table(pi_hat = pi_hat,w = test$weight,pcon_id = test$GSSCode)
+  
+  temp[,pcon_w:= sum(w),by = c('pcon_id')]
+  
+  vote_share_area =
+  temp[,lapply(.SD,function(x){sum(x*w)/unique(pcon_w)}),
+       by = c('pcon_id'),
+       .SDcols = c('pi_hat')]
+  
+  vote_share_area_list = cbind(vote_share_area_list,vote_share_area)
+  
+}
+
+## All columns that are not numeric are FALSE, all numeric columns are TRUE
+num_cols <- unlist(lapply(vote_share_area_list,is.numeric),use.names = FALSE)
+
+## Create a matrix as a dataframe does not allow this type of manipulation 
+## as column names are variables in the environment of a datatable
+mat <- as.matrix(vote_share_area_list)
+mat <- mat[,num_cols]
+
+## Now we only have the columns containing the values of the draws from the 
+## posteriors for each of the constituencies, and we create a matrix
+cons_mat <- matrix(as.numeric(mat),nrow=632)
+
+## created a dataframe to continue on, with cons_df_id containing the area 
+## containing the area indicators
+cons_df <- as.data.frame(cons_mat)
+cons_df_id <- cbind.data.frame(vote_share_area_list$pcon_id,cons_df)
+
+## take the mean of each constituency by summing each row's values and dividing 
+## them by the amount of draws (which is number of columns). First column is not
+## selected since it is the pcon_id (area indicator).
+cons_mean <- rowSums(cons_df_id[,2:51])/ncol(cons_df_id[,2:51])
+
+## The mean for each constituency is then merged back with the right pcon_id
+cons_mean <- cbind.data.frame(cons_df_id[,1],cons_mean)
+
+## Took the vote share of each of the parties and checked whether they sum up to 100,
+## Some did not and the mean is 97.6 --> I had to get rid of the NAs,
+## The vote shares are found to be indeed in %, summing up to 1
+## Even though vote share is obvious, BES does not really explain what their
+## data means in their manuals
+outcome_list <- data.table()
+for(t in 1:632){
+outcome =sum(
+  conxls$Con19[t],
+    conxls$Lab19[t],
+    conxls$LD19[t],
+    conxls$SNP19[t],
+    conxls$PC19[t],
+    conxls$UKIP19[t],
+    conxls$Green19[t],
+    conxls$Other19[t],
+    na.rm=TRUE)
+
+  outcome_list = cbind(outcome_list, outcome)
+}
+
+outcome_list_try <- as.numeric(unlist(outcome_list))
+mean(outcome_list_try)
+
+## Rounding errors perhaps, first one has FALSE, second has TRUEs, but this 1/1million
+outcome_list_try > 100.00001
+outcome_list_try > 100.000001
+
+
+## GSSCode E14000637, or element 142, has NA for conservative vote share. Element
+## 142 is the constituency of Chorley, where the Conservatives did not run
+which(is.na(cons_share$`conxls$Con19/100`))
+conxls$Con19
+conxls$Con19[142]
+conxls$Con19[142] <- 0
+
+## Now we want to measure how well the predictions work against the real observed data
+## we measure the predicted propensity to vote against the real observed vote share
+## vote_share cons
+cons_share <- cbind.data.frame(conxls$GSSCode, conxls$Con19/100)
+
+## Now we want to have the real vote share (conxls data) compared to the predicted vote
+## share (cons_mean), so we need to make sure they are merged correctly based on the 
+## constituency indicator (GSSCode and cons_df_id[,1], respectively)
+summary(cons_share)
+summary(cons_mean)
+
+## Now we want to merge both the frame with the predicted propensity to vote 
+## and the real observed vote share for the conservatives, for each constituency
+difference <- merge(cons_mean, cons_share, by.x="cons_df_id[, 1]",by.y="conxls$GSSCode")
+
+## Plot predicted against observed in a scatterplot
+x = difference$cons_mean
+y = difference$`conxls$Con19/100`
+plot(x = x,
+     y = y,
+     xlab="Predicted vote share",
+     ylab="Observed vote share",
+     col=c("black"),cex = 0.5,
+     ylim = c(0,1),xlim = c(0,1))
+abline(0,1)
+graph = lm(y ~ x)
+j <- order(x)
+lines(x = x[j],
+      y = graph$fitted.values[j],
+      col = 'red',lwd = 2)
+abline(v = vote_share)
+abline(v = mean(cons_share[,2]), col = "red")
+legend('topleft',legend = c(paste('bias:',round(mean((y-x)),3)),
+                            paste('rmse:',round(sqrt(mean((y-x)^2)),3)),
+                            paste('cor:',round(cor(y,x),3))))
