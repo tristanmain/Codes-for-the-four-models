@@ -10,6 +10,78 @@ library("mltools")
 library("bayesplot")
 library("Metrics")
 
+## READING IN THE DATA
+
+## post-stratification frame
+## Downloaded from: https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/IPPPNU
+pf <- read.csv("hlv_psw.csv", stringsAsFactors = FALSE)
+pf <- pf %>%
+      dplyr::select(GSSCode, sex, age0, housing,
+                hrsocgrd, education, weight)
+
+## individual level data
+## Downloaded from: https://www.britishelectionstudy.com/data-object/wave-19-of-the-2014-2023-british-election-study-internet-panel/
+suppressWarnings(indxls <- read.spss("BES2019_W19_v1.0-2.sav", to.data.frame=TRUE))
+
+## constituency level data
+## Downloaded from: https://www.britishelectionstudy.com/data-object/2019-bes-constituency-results-with-census-and-candidate-data
+conxls <- read_xlsx("BES-2019-General-Election-results-file-v1.1.xlsx", 
+                     col_names = TRUE)
+
+## Remove non-voters and add vector with binary properties for conservative win 
+## (1 for Conservatives, 0 for other political parties)
+indxls = indxls[which(indxls$p_turnout_2019 !="No, I did not vote"),]
+indxls = indxls[which(indxls$p_turnout_2019 !="Don't know"),]
+indxls$con_vote = ifelse(indxls$generalElectionVote=="Conservative",1,0)
+
+
+## RECODING THE VARIABLES TO MATCH THE POST-STRATIFATION FRAME
+## local area
+conxls$GSSCode <- conxls$ONSConstID
+
+## Sex
+indxls$sex <- indxls$gender
+
+## Housing
+indxls$housing <- recode(indxls$p_housing, 
+                           "Own â.... outright" = "Owns", 
+                           "Own â.... with a mortgage" = "Owns",
+                           "Own (part-own) â.... through shared ownership scheme (i.e. pay part mortgage, part rent)" = "Owns",
+                           "Rent â.... from a private landlord" = "Rents",
+                           "Rent â.... from my local authority" = "Rents",
+                           "Rent â.... from a housing association" = "Rents",
+                           "Neither â.... I live with my parents, family or friends but pay some rent to them" = "Rents",
+                           "Neither â.... I live rent-free with my parents, family or friends" = "Rents",
+                           "Other" = "Rents")
+
+## Education
+indxls$education <- recode(indxls$p_edlevel,
+                           "Below GCSE" = "Level 1",
+                           "GCSE" = "Level 2",
+                           "A-level" = "Level 3",
+                           "Undergraduate" = "Level 4/5",
+                           "Postgrad" = "Level 4/5")
+
+## Social grade
+indxls$hrsocgrd <- recode(indxls$p_socgrade, 
+                            "A" = "AB",
+                            "B" = "AB",
+                            "D" = "DE",
+                            "E" = "DE")
+levels(indxls$hrsocgrd)[which(levels(indxls$hrsocgrd) %in% c("Refused", "Unknown"))]=NA
+
+## Age
+age_num <- as.numeric(as.character(unlist(indxls$age)))
+indxls$age0 = cut(age_num,breaks = c(-Inf,19,24,29,44,59,64,74,Inf),
+                  labels = c("16-19",
+                             "20-24",
+                             "25-29",
+                             "30-44",
+                             "45-59",
+                             "60-64",
+                             "65-74",
+                             "75+"))
+
 conxls$age18to24 <- conxls$c11Age18to19 + 
   conxls$c11Age20to24
 
@@ -57,10 +129,6 @@ bess <- select(bess, -pano,)
 bess <- bess %>%
   filter(GSSCode != "         ")
 bess <- bess[complete.cases(bess),]
-
-## subset to make the coding go faster.
-subsample_id <- sample(1:dim(bess)[1],size=8000)
-bess_subsample = bess[subsample_id,]
 
 age1<-model.matrix(~age0-1,data = bess_subsample)[,-5] ## Baseline "45-59" 
 sex1<-model.matrix(~sex-1,data = bess_subsample)[,-1] ## Baseline "Female"
