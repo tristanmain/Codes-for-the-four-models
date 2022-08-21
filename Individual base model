@@ -112,6 +112,7 @@ education1<-model.matrix(~education-1,data = bess)[,-5] ## Baseline "Level 4/5"
 
 ## PREPARING THE MODEL
 ## Model the data
+
 X <- cbind(education1, age1,sex1,housing1,hrsocgrd1) 
 Y <- bess$con_vote
 area_id <- as.integer(as.factor(bess$GSSCode))
@@ -436,4 +437,17 @@ legend('topleft',legend = c(paste('bias:',round(mean((y-x)),3)),
                             paste('rmse:',round(sqrt(mean((y-x)^2)),3)),
                             paste('cor:',round(cor(y,x),3))))
 
-mae(x,y)
+
+
+
+## Is the same line as line 440, got this myself
+# abline(lm(difference$`conxls$Con19/100`~difference$cons_mean  ),col="red",lwd=2)
+
+## Calculate RSME; 0.0959. Work to be done, first find out why they all hating on RSME
+## on the internet (got the links in my notes, has to do with the fact that binary data
+## is used so the outcomes can only be between 0 and 1.)
+RSME <- sqrt(mean((difference$`conxls$Con19/100` - difference$cons_mean)^2))
+RSME_con <- sqrt((difference$`conxls$Con19/100` - difference$cons_mean)^2)
+plot(RSME_con)
+
+mae(y,x)
