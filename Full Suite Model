@@ -1,0 +1,372 @@
+options(scipen = 999)
+
+library("dplyr")
+library("readxl")
+library("foreign")
+library("parallel")
+library("rstan")
+library("data.table")
+library("mltools")
+library("bayesplot")
+library("Metrics")
+
+conxls$age18to24 <- conxls$c11Age18to19 + 
+  conxls$c11Age20to24
+
+conxls$age65plus <- conxls$c11Age65to74 + 
+  conxls$c11Age75to84 + 
+  conxls$c11Age85to89 +
+  conxls$c11Age90plus
+
+conxls$healthbad <- conxls$c11HealthBad + conxls$c11HealthVeryBad
+
+inds <- dplyr::select(indxls, 
+                      pano, 
+                      sex, 
+                      age0, 
+                      housing, 
+                      hrsocgrd, 
+                      education,
+                      con_vote)
+cons <- dplyr::select(conxls, 
+                      pano, 
+                      GSSCode,
+                      Con17,
+                      Lab17,
+                      leaveHanretty,
+                      Green17,
+                      PC17,
+                      age18to24,
+                      age65plus,
+                      c11HouseOwned,
+                      c11SelfEmployed,
+                      c11Unemployed,
+                      c11EconomicInactive,
+                      c11EthnicityWhite,
+                      c11PopulationDensity,
+                      c11QualLevel4,
+                      healthbad)
+
+
+summary(is.na(cons))
+cons <- cons %>% replace(is.na(.),0)
+
+bess <- merge(inds, cons)
+bess <- select(bess, -pano,)
+## Delete incomplete case
+bess <- bess %>%
+  filter(GSSCode != "         ")
+bess <- bess[complete.cases(bess),]
+
+## subset to make the coding go faster.
+subsample_id <- sample(1:dim(bess)[1],size=8000)
+bess_subsample = bess[subsample_id,]
+
+age1<-model.matrix(~age0-1,data = bess_subsample)[,-5] ## Baseline "45-59" 
+sex1<-model.matrix(~sex-1,data = bess_subsample)[,-1] ## Baseline "Female"
+housing1<-model.matrix(~housing-1,data = bess_subsample)[,-1] ## Baseline "Owns" 
+hrsocgrd1 <- model.matrix(~hrsocgrd-1, data=bess_subsample)[,-1] ## Baseline "AB"
+education1<-model.matrix(~education-1,data = bess_subsample)[,-5] ## Baseline "Level 4/5"
+
+
+## Fit2
+Z <- bess[,c("Con17",
+             "Lab17",
+             "leaveHanretty",
+             "Green17",
+             "PC17",
+             "age18to24",
+             "age65plus",
+             "c11HouseOwned",
+             "c11SelfEmployed",
+             "c11Unemployed",
+             "c11EconomicInactive",
+             "c11EthnicityWhite",
+             "c11PopulationDensity",
+             "c11QualLevel4",
+             "healthbad")]
+
+## also divide by 100 with predicitions
+Z <- Z/100
+X <- cbind(education1,age1,sex1,housing1,hrsocgrd1) 
+Y <- bess$con_vote
+area_id <- as.integer(as.factor(bess$GSSCode))
+model_data2 = list(Y = Y, 
+                   X = X,
+                   Z = Z,
+                   p = dim(X)[2],
+                   n = length(Y),
+                   q = dim(Z)[2],
+                   area_id = area_id,
+                   N_area = max(area_id)
+)
+
+## Model the code
+## Matrix Z has now n instead N_area, so we now treat the constituency level data
+## as if it was individual level data. We also changed the mu to the point that we 
+## do not use Z[area_id,q] anymore, but just Z. We are now treating it more like 
+## X than before.
+model_code2= "data {
+  int<lower = 1> n; // number of observations, rows in matrix
+  int<lower = 1> p; // number of covariates, columns in matrix
+  matrix[n, p] X;   // model matrix
+  int<lower = 0,upper = 1> Y[n]; // response variable
+  int<lower = 1> N_area; // number of areas
+  int<lower = 1> area_id[n]; // vector of group assignments per subject
+  
+  int<lower=1> q;
+  matrix[n,q] Z;
+}
+parameters{
+  real alpha; // intercept
+  vector[p] beta; // coefficients for individuals
+  real<lower = 0> tau; // sd of group observations
+  vector[N_area] eta; // vector of contstituency coefficients
+  vector[q] gamma; //  are gonna be the area regression coefficients
+}
+transformed parameters{
+  vector[n] mu;
+  vector[n] pi;
+
+  mu = alpha + X*beta + eta[area_id] + Z*gamma;
+  pi = inv_logit(mu);
+}
+model{
+// priors 
+  alpha ~ normal(0,1);
+  beta ~ normal(0,1);
+  eta ~ normal(0,tau);
+  tau ~ normal(0,1);
+  gamma ~ normal(0,1);
+// likelihood
+  Y ~ bernoulli(pi);
+}"
+
+## check the model
+detectCores(all.tests = FALSE, logical = TRUE) ## got 4 cores
+model_data2
+## run STAN
+fit2 <- stan(model_code = model_code2, 
+             data = model_data2,
+             iter = 100,
+             warmup = 50,
+             verbose = T,
+             chains = 4,
+             pars = c("alpha","beta","eta", "gamma"),
+             cores =4)
+
+## checking model convergence
+traceplot(fit2, pars = "gamma", inc_warmup = TRUE)
+
+mcmc_areas(fit2,pars = c("gamma[1]",
+                         "gamma[2]",
+                         "gamma[3]",
+                         "gamma[4]",
+                         "gamma[5]",
+                         "gamma[6]",
+                         "gamma[7]",
+                         "gamma[8]",
+                         "gamma[9]",
+                         "gamma[10]",
+                         "gamma[11]",
+                         "gamma[12]",
+                         "gamma[13]",
+                         "gamma[14]",
+                         "gamma[15]"),
+           prob = 0.95) 
+
+print(fit2, pars = c("alpha", "beta", "gamma"))
+
+mcmc_rhat(rhat(fit2))
+
+## Extract the parameters
+beta_sims2 = extract(fit2,pars = c('beta'),permuted = T,inc_warmup = F)$beta
+alpha_sims2 = extract(fit2,pars = c('alpha'),permuted = T,inc_warmup = F)$alpha
+eta_sims2 = extract(fit2,pars = c('eta'),permuted = T,inc_warmup = F)$eta
+gamma_sims2 = extract(fit2,pars = c('gamma'),permuted = T,inc_warmup = F)$gamma
+
+test <- as.data.table(pf[,c('GSSCode','education','age0','sex','housing','hrsocgrd' ,'weight')])
+test$education = as.factor(test$education)
+test$age0 = as.factor(test$age0)
+test$sex = as.factor(test$sex)
+test$housing = as.factor(test$housing)
+test$hrsocgrd = as.factor(test$hrsocgrd)
+
+test = one_hot(test,dropCols = T,dropUnusedLevels = T,
+               cols = c('education','age0','sex','housing','hrsocgrd'))
+
+## create the test set for the constituency level information (pf data)
+test2 <- as.data.table(conxls[,c('GSSCode',
+                                 "Con17",
+                                 "Lab17",
+                                 "leaveHanretty",
+                                 "Green17",
+                                 "PC17",
+                                 "age18to24",
+                                 "age65plus",
+                                 "c11HouseOwned",
+                                 "c11SelfEmployed",
+                                 "c11Unemployed",
+                                 "c11EconomicInactive",
+                                 "c11EthnicityWhite",
+                                 "c11PopulationDensity",
+                                 "c11QualLevel4",
+                                 "healthbad")])
+
+test2 <- test2 %>% replace(is.na(.),0)
+
+test2 <- merge(test,test2, by.x="GSSCode", by.y="GSSCode")
+
+
+##
+inv_logit = function(x){exp(x)/(1+exp(x))}
+
+##
+pi_hat_list2 = data.table()
+vote_share_list2 = data.table()
+
+pi_hat_area_list2 = data.table()
+vote_share_area_list2 = data.table()
+
+##
+for(s in 1:50){
+  mu_hat = alpha_sims2[s] + 
+    test2$`education_Level 1`*beta_sims2[s,colnames(model_data2$X)=="educationLevel 1"] +
+    test2$`education_Level 2`*beta_sims2[s,colnames(model_data2$X)=="educationLevel 2"] +
+    test2$`education_Level 3`*beta_sims2[s,colnames(model_data2$X)=="educationLevel 3"] +
+    test2$`education_No qualifications`*beta_sims2[s,colnames(model_data2$X)=="educationNo qualifications"] +
+    test2$`age0_16-19`*beta_sims2[s,colnames(model_data2$X)=="age016-19"] +
+    test2$`age0_20-24`*beta_sims2[s,colnames(model_data2$X)=="age020-24"] +
+    test2$`age0_25-29`*beta_sims2[s,colnames(model_data2$X)=="age025-29"] +
+    test2$`age0_30-44`*beta_sims2[s,colnames(model_data2$X)=="age030-44"] +
+    test2$`age0_60-64`*beta_sims2[s,colnames(model_data2$X)=="age060-64"] +
+    test2$`age0_65-74`*beta_sims2[s,colnames(model_data2$X)=="age065-74"] +
+    test2$`age0_75+`*beta_sims2[s,colnames(model_data2$X)=="age075+"] +
+    test2$`sex_Male`*beta_sims2[s,colnames(model_data2$X)=="sex1"] +
+    test2$`housing_Rents`*beta_sims2[s,colnames(model_data2$X)=="housing1"] +
+    test2$`hrsocgrd_C1`*beta_sims2[s,colnames(model_data2$X)=="hrsocgrdC1"] +
+    test2$`hrsocgrd_C2`*beta_sims2[s,colnames(model_data2$X)=="hrsocgrdC2"] +
+    test2$`hrsocgrd_DE`*beta_sims2[s,colnames(model_data2$X)=="hrsocgrdDE"] +
+    eta_sims2[s,match(test2$GSSCode,levels(as.factor(bess$GSSCode)))] +
+    test2$`Con17`*gamma_sims2[s,colnames(model_data2$Z)=="Con17"]/100 +
+    test2$`c11EthnicityWhite`*gamma_sims2[s,colnames(model_data2$Z)=="c11EthnicityWhite"]/100 +
+    test2$`c11QualLevel4`*gamma_sims2[s,colnames(model_data2$Z)=="c11QualLevel4"]/100 +
+    test2$`age18to24`*gamma_sims2[s,colnames(model_data2$Z)=="age18to24"]/100 +
+    test2$`age65plus`*gamma_sims2[s,colnames(model_data2$Z)=="age65plus"]/100 +
+    test2$`leaveHanretty`*gamma_sims2[s,colnames(model_data2$Z)=="leaveHanretty"]/100 +
+    test2$`c11HouseOwned`*gamma_sims2[s,colnames(model_data2$Z)=="c11HouseOwned"]/100 +
+    test2$`c11Unemployed`*gamma_sims2[s,colnames(model_data2$Z)=="c11Unemployed"]/100 +
+    test2$`c11EconomicInactive`*gamma_sims2[s,colnames(model_data2$Z)=="c11EconomicInactive"]/100 +
+    test2$`c11PopulationDensity`*gamma_sims2[s,colnames(model_data2$Z)=="c11PopulationDensity"]/100 +
+    test2$`healthbad`*gamma_sims2[s,colnames(model_data2$Z)=="healthbad"]/100 +
+    test2$`Green17`*gamma_sims2[s,colnames(model_data2$Z)=="Green17"]/100 +
+    test2$`PC17`*gamma_sims2[s,colnames(model_data2$Z)=="PC17"]/100 +
+    test2$`c11SelfEmployed`*gamma_sims2[s,colnames(model_data2$Z)=="c11SelfEmployed"]/100
+    
+  pi_hat2 = inv_logit(mu_hat)
+  #storage
+  pi_hat_list2 = cbind(pi_hat_list2,pi_hat2)
+  
+  # national vote share
+  vote_share2 = sum(pi_hat2*test2$weight)/sum(test2$weight)
+  
+  vote_share_list2 = cbind(vote_share_list2,vote_share2)
+  
+  # area level 
+  temp = data.table(pi_hat2 = pi_hat2,w = test2$weight,pcon_id = test2$GSSCode)
+  
+  temp[,pcon_w:= sum(w),by = c('pcon_id')]
+  
+  
+  vote_share_area2 =
+    temp[,lapply(.SD,function(x){sum(x*w)/unique(pcon_w)}),
+         by = c('pcon_id'),
+         .SDcols = c('pi_hat2')]
+  
+  
+  vote_share_area_list2 = cbind(vote_share_area_list2,vote_share_area2)
+  
+}
+
+## all columns that are not numeric are FALSE, all numeric columns are TRUE.
+## The first columns has NAs...
+num_cols2 <- unlist(lapply(vote_share_area_list2,is.numeric),use.names = FALSE)
+num_cols2
+
+## create a matrix as a dataframe does not allow this type of manipulation as column names
+## are variables in the environment of a datatable (see FAQ 1.1 of datatable)
+mat2 <- as.matrix(vote_share_area_list2)
+mat2 <- mat2[,num_cols2]
+
+## now we only have the columns containing the values of the draws from the 
+## posteriors for each of the constituencies, and we create a matrix
+## I did not select the column with the NAs, need to investigate this further
+cons_mat2 <- matrix(as.numeric(mat2[,]),nrow=632)
+
+## created a dataframe to continue on, with cons_df_id containing the area indicators
+cons_df2 <- as.data.frame(cons_mat2)
+cons_df_id2 <- cbind.data.frame(vote_share_area_list2$pcon_id,cons_df2)
+
+## HERE THE NUMBER OF COLUMNS IS ONLY 41, WHICH IS KINDA WEIRD. MIGHT HAVE TO DO
+## WITH THE AMOUNT OF LOOPS I USED? INSTEAD OF 250 IT IS NOW ONLY 41 COLUMNS
+cons_mean2 <- rowSums(cons_df_id2[,2:51])/ncol(cons_df_id2[,2:51])
+
+## the mean for each constituency is then merged back with the right pcon_id
+cons_mean2 <- cbind.data.frame(cons_df_id2[,1],cons_mean2)
+
+## histogram from all draws for each constituency, cannot print all of them out
+## select a few that are interesting, like high vote share and low vote share
+## add a line of the true result and the predicted results
+hist(as.numeric(cons_df2[316,]))
+
+## Now we want to measure how well the predictions work against the real observed data
+## we measure the predicted propensity to vote against the real observed vote share
+## vote_share cons
+conxls$Con19[142]
+conxls$Con19[142] <- 0
+
+cons_share2 <- cbind.data.frame(conxls$GSSCode, conxls$Con19/100)
+
+## Now we want to have the real vote share (conxls data) compared to the predicted vote
+## share (cons_mean), so we need to make sure they are merged correctly based on the 
+## constituency indicator (GSSCode and cons_df_id[,1], respectively)
+summary(cons_share)
+summary(cons_mean)
+
+## Now we want to merge both the frame with the predicted propensity to vote 
+## and the real observed vote share for the conservatives, for each constituency
+difference2 <- merge(cons_mean2, cons_share2, by.x="cons_df_id2[, 1]",by.y="conxls$GSSCode")
+
+## Plot predicted against observed
+## scatterplot, looking for regression line to go throught them.
+plot(difference2)
+
+
+
+
+pairs(difference2[,2:3])
+
+
+## for high vote share predictions underestimates, for low vote share the model
+## overestimate --> just like they say in the papers (Lauderdale?)
+x = difference2$cons_mean2
+y = difference2$`conxls$Con19/100`
+plot(x = x,
+     y = y,
+     xlab="Predicted vote share",
+     ylab="Observed vote share",
+     col=c("black"),cex = 0.5,
+     ylim = c(0,1),xlim = c(0,1))
+abline(0,1)
+graph = lm(y ~ x)
+j <- order(x)
+lines(x = x[j],
+      y = graph$fitted.values[j],
+      col = 'red',lwd = 2)
+abline(v = vote_share2)
+abline(v = mean(cons_share2[,2]), col = "red")
+legend('topleft',legend = c(paste('bias:',round(mean((y-x)),3)),
+                            paste('rmse:',round(sqrt(mean((y-x)^2)),3)),
+                            paste('cor:',round(cor(y,x),3))))
+                            
+mae(x,y)
