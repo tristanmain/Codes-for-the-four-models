@@ -10,6 +10,7 @@ library("mltools")
 library("bayesplot")
 library("Metrics")
 
+
 ## READING IN THE DATA
 
 ## post-stratification frame
@@ -97,6 +98,7 @@ cons <- dplyr::select(conxls,
                       Con17,
                       c11EthnicityWhite,
                       c11QualNone)
+                      
 bess <- merge(inds, cons)
 bess <- select(bess, -pano,)
 
@@ -295,24 +297,18 @@ mat2 <- mat2[,num_cols2]
 
 ## now we only have the columns containing the values of the draws from the 
 ## posteriors for each of the constituencies, and we create a matrix
-## I did not select the column with the NAs, need to investigate this further
 cons_mat2 <- matrix(as.numeric(mat2[,]),nrow=632)
 
 ## created a dataframe to continue on, with cons_df_id containing the area indicators
 cons_df2 <- as.data.frame(cons_mat2)
 cons_df_id2 <- cbind.data.frame(vote_share_area_list2$pcon_id,cons_df2)
 
-## HERE THE NUMBER OF COLUMNS IS ONLY 41, WHICH IS KINDA WEIRD. MIGHT HAVE TO DO
-## WITH THE AMOUNT OF LOOPS I USED? INSTEAD OF 250 IT IS NOW ONLY 41 COLUMNS
+## calculate the mean vote share per local area, first column is discarded as this is 
+## the identifier
 cons_mean2 <- rowSums(cons_df_id2[,2:51])/ncol(cons_df_id2[,2:51])
 
 ## the mean for each constituency is then merged back with the right pcon_id
 cons_mean2 <- cbind.data.frame(cons_df_id2[,1],cons_mean2)
-
-## histogram from all draws for each constituency, cannot print all of them out
-## select a few that are interesting, like high vote share and low vote share
-## add a line of the true result and the predicted results
-hist(as.numeric(cons_df2[316,]))
 
 ## Now we want to measure how well the predictions work against the real observed data
 ## we measure the predicted propensity to vote against the real observed vote share
@@ -332,9 +328,7 @@ difference2 <- merge(cons_mean2, cons_share2, by.x="cons_df_id2[, 1]",by.y="conx
 ## Plot predicted against observed
 ## scatterplot, looking for regression line to go throught them.
 plot(difference2)
-
 pairs(difference2[,2:3])
-
 
 ## for high vote share predictions underestimates, for low vote share the model overestimates
 x = difference2$cons_mean2
