@@ -95,6 +95,7 @@ inds <- dplyr::select(indxls,
 cons <- dplyr::select(conxls, 
                pano, 
                GSSCode)
+               
 bess <- merge(inds, cons)
 bess <- select(bess, -pano,)
 
@@ -111,8 +112,8 @@ hrsocgrd1 <- model.matrix(~hrsocgrd-1, data=bess)[,-1] ## Baseline "AB"
 education1<-model.matrix(~education-1,data = bess)[,-5] ## Baseline "Level 4/5"
 
 ## PREPARING THE MODEL
-## Model the data
 
+## Model the data
 X <- cbind(education1, age1,sex1,housing1,hrsocgrd1) 
 Y <- bess$con_vote
 area_id <- as.integer(as.factor(bess$GSSCode))
@@ -209,16 +210,6 @@ prob = 0.95) +
        subtitle = "with medians and 95% intervals")
 
 
-
-## trying somethings NOT NEEDED ANYMORE, WE ALREADY GOT RHAT
-fit_summary <- summary(fit)
-print(names(fit_summary))
-Rhat(fit_summary) <-fit_summary$summary
-plot(fit)
-pairs(fit, pars = c("alpha", "beta[1]", "lp__"), las = 1)
-#####
-
-
 ## Assign the correct weights to each constituency, based on # of inhabitants
 ## BES = Electorate is 'Size of electorate'.
 pf$weight = pf$weight*conxls$Electorate19[match(pf$GSSCode,conxls$ONSConstID)]
@@ -238,13 +229,6 @@ test = one_hot(test,dropCols = T,dropUnusedLevels = T,
 ## Use the posterior draws of the STAN output for prediction
 beta_sims = extract(fit,pars = c('beta'),permuted = T,inc_warmup = F)$beta
 alpha_sims = extract(fit,pars = c('alpha'),permuted = T,inc_warmup = F)$alpha
-
-# eta is not needed for this research
-#eta_sims = extract(fit,pars = c('eta'),permuted = T,inc_warmup = F)$eta
-
-# gamma is for the Fit2, see Fit_cons script. I keep this file as it is after
-# Roberto's change, so I won't fuck up
-#gamma_sims = extract(fit,pars = c('gamma'),permuted = T,inc_warmup = F)$gamma
 
 ## Create inverse logit function
 inv_logit = function(x){exp(x)/(1+exp(x))}
@@ -301,15 +285,15 @@ for(s in 1:50){
   vote_share_area_list = cbind(vote_share_area_list,vote_share_area)
   
 }
+
 View(vote_share_area_list)
 ## Check national vote share predictions
 hist(as.numeric(vote_share_list))
 abline(v =c(mean(as.numeric(vote_share_list))))
 quantile(as.numeric(vote_share_list),probs = seq(0,1,0.1))
 
-
 ## need to extract only the numeric vectors from the df to be able to summarize,
-## could not find a way around summing over only the numerics.New matrix is allright,
+## could not find a way around summing over only the numerics. New matrix is allright,
 ## is the same as the prediction frame, but without the character vectors in between 
 str(vote_share_area_list)
 
@@ -321,8 +305,7 @@ num_cols
 ## are variables in the environment of a datatable (see FAQ 1.1 of datatable)
 mat <- as.matrix(vote_share_area_list)
 mat <- mat[,num_cols]
-str(mat)
-View(mat)
+
 ## now we only have the columns containing the values of the draws from the 
 ## posteriors for each of the constituencies, and we create a matrix
 cons_mat <- matrix(as.numeric(mat),nrow=632)
@@ -338,13 +321,6 @@ cons_mean <- rowSums(cons_df_id[,2:51])/ncol(cons_df_id[,2:51])
 
 ## the mean for each constituency is then merged back with the right pcon_id
 cons_mean <- cbind.data.frame(cons_df_id[,1],cons_mean)
-
-View(cons_mean)
-## histogram from all draws for each constituency, cannot print all of them out
-## select a few that are interesting, like high vote share and low vote share
-## add a line of the true result and the predicted results
-hist(as.numeric(cons_df[316,]))
-
 
 ## CHECKING IF THE VOTE SHARE IS REALLY WHAT I THINK IT IS. WILL BE THE
 ## OBSERVED DATA
@@ -385,7 +361,7 @@ which(is.na(cons_share$`conxls$Con19/100`))
 ## according to the BBC did vote for the conservatives. So instead of replacing the NA
 ## with 0, we will take the mean of the vote share from all constituencies (almost the same
 ## as the national vate share)
-## !!! Note from Roberto, the conservatives did not run here!!! 
+## It was found the Conservatives did not run in this constituency
 conxls$Con19
 conxls$Con19[142]
 conxls$Con19[142] <- 0
@@ -404,16 +380,10 @@ summary(cons_mean)
 ## Now we want to merge both the frame with the predicted propensity to vote 
 ## and the real observed vote share for the conservatives, for each constituency
 difference <- merge(cons_mean, cons_share, by.x="cons_df_id[, 1]",by.y="conxls$GSSCode")
-View(difference)
+
 ## Plot predicted against observed
-## scatterplot, looking for regression line to go throught them.
 plot(difference)
-
-
-
-
 pairs(difference[,2:3])
-
 
 ## for high vote share predictions underestimates, for low vote share the model
 ## overestimate --> just like they say in the papers (Lauderdale?)
