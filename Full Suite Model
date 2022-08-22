@@ -359,7 +359,6 @@ for(s in 1:50){
 }
 
 ## all columns that are not numeric are FALSE, all numeric columns are TRUE.
-## The first columns has NAs...
 num_cols2 <- unlist(lapply(vote_share_area_list2,is.numeric),use.names = FALSE)
 
 ## create a matrix as a dataframe does not allow this type of manipulation as column names
@@ -369,7 +368,6 @@ mat2 <- mat2[,num_cols2]
 
 ## now we only have the columns containing the values of the draws from the 
 ## posteriors for each of the constituencies, and we create a matrix
-## I did not select the column with the NAs, need to investigate this further
 cons_mat2 <- matrix(as.numeric(mat2[,]),nrow=632)
 
 ## created a dataframe to continue on, with cons_df_id containing the area indicators
@@ -382,11 +380,6 @@ cons_mean2 <- rowSums(cons_df_id2[,2:51])/ncol(cons_df_id2[,2:51])
 
 ## the mean for each constituency is then merged back with the right pcon_id
 cons_mean2 <- cbind.data.frame(cons_df_id2[,1],cons_mean2)
-
-## histogram from all draws for each constituency, cannot print all of them out
-## select a few that are interesting, like high vote share and low vote share
-## add a line of the true result and the predicted results
-hist(as.numeric(cons_df2[316,]))
 
 ## It was found that the constituency of Chorley did not have any vote shares
 conxls$Con19[142]
