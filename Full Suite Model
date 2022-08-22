@@ -130,10 +130,6 @@ bess <- bess %>%
   filter(GSSCode != "         ")
 bess <- bess[complete.cases(bess),]
 
-## subset to make the coding go faster.
-subsample_id <- sample(1:dim(bess)[1],size=8000)
-bess_subsample = bess[subsample_id,]
-
 age1<-model.matrix(~age0-1,data = bess_subsample)[,-5] ## Baseline "45-59" 
 sex1<-model.matrix(~sex-1,data = bess_subsample)[,-1] ## Baseline "Female"
 housing1<-model.matrix(~housing-1,data = bess_subsample)[,-1] ## Baseline "Owns" 
@@ -365,7 +361,6 @@ for(s in 1:50){
 ## all columns that are not numeric are FALSE, all numeric columns are TRUE.
 ## The first columns has NAs...
 num_cols2 <- unlist(lapply(vote_share_area_list2,is.numeric),use.names = FALSE)
-num_cols2
 
 ## create a matrix as a dataframe does not allow this type of manipulation as column names
 ## are variables in the environment of a datatable (see FAQ 1.1 of datatable)
@@ -381,8 +376,8 @@ cons_mat2 <- matrix(as.numeric(mat2[,]),nrow=632)
 cons_df2 <- as.data.frame(cons_mat2)
 cons_df_id2 <- cbind.data.frame(vote_share_area_list2$pcon_id,cons_df2)
 
-## HERE THE NUMBER OF COLUMNS IS ONLY 41, WHICH IS KINDA WEIRD. MIGHT HAVE TO DO
-## WITH THE AMOUNT OF LOOPS I USED? INSTEAD OF 250 IT IS NOW ONLY 41 COLUMNS
+## Take the mean for each local area, first column is discarded in the calculations 
+## as this is the identifier
 cons_mean2 <- rowSums(cons_df_id2[,2:51])/ncol(cons_df_id2[,2:51])
 
 ## the mean for each constituency is then merged back with the right pcon_id
@@ -393,9 +388,7 @@ cons_mean2 <- cbind.data.frame(cons_df_id2[,1],cons_mean2)
 ## add a line of the true result and the predicted results
 hist(as.numeric(cons_df2[316,]))
 
-## Now we want to measure how well the predictions work against the real observed data
-## we measure the predicted propensity to vote against the real observed vote share
-## vote_share cons
+## It was found that the constituency of Chorley did not have any vote shares
 conxls$Con19[142]
 conxls$Con19[142] <- 0
 
@@ -411,15 +404,8 @@ summary(cons_mean)
 ## and the real observed vote share for the conservatives, for each constituency
 difference2 <- merge(cons_mean2, cons_share2, by.x="cons_df_id2[, 1]",by.y="conxls$GSSCode")
 
-## Plot predicted against observed
-## scatterplot, looking for regression line to go throught them.
 plot(difference2)
-
-
-
-
 pairs(difference2[,2:3])
-
 
 ## for high vote share predictions underestimates, for low vote share the model
 ## overestimate --> just like they say in the papers (Lauderdale?)
