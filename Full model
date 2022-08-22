@@ -286,7 +286,6 @@ for(s in 1:50){
 summary(mu_hat)
 dim(vote_share_area_list2)
 ## all columns that are not numeric are FALSE, all numeric columns are TRUE.
-## The first columns has NAs...
 num_cols2 <- unlist(lapply(vote_share_area_list2,is.numeric),use.names = FALSE)
 num_cols2
 
